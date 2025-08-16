@@ -196,7 +196,7 @@ def main():
             st.sidebar.metric("Model Accuracy", f"{results['accuracy']:.3f}")
     
     # Main content
-    tab1, tab2, tab3 = st.tabs(["🔮 Prediction", "📊 Model Performance", "📈 Data Analysis"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🔮 Prediction", "📊 Model Performance", "📈 Data Analysis", "💰 Revenue Simulation"])
     
     with tab1:
         st.header("Make Churn Prediction")
@@ -285,13 +285,346 @@ def main():
                         ))
                         fig.update_layout(height=300)
                         st.plotly_chart(fig, use_container_width=True)
+    
+    with tab4:
+        st.header("💰 Revenue Impact Simulation")
+        
+        if not predictor.is_trained:
+            st.warning("⚠️ Please train the model first to run revenue simulation.")
+        else:
+            st.subheader("Scenario Analysis")
+            st.write("Simulate the financial impact of using churn prediction to retain customers")
+            
+            # Simulation parameters
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("📊 Simulation Settings")
+                
+                churn_threshold = st.slider(
+                    "Churn Probability Threshold (%)",
+                    min_value=10,
+                    max_value=90,
+                    value=50,
+                    step=5,
+                    help="Customers above this probability threshold are predicted to churn"
+                )
+                
+                retention_cost_pct = st.slider(
+                    "Retention Campaign Cost (% of Purchase Amount)",
+                    min_value=1,
+                    max_value=50,
+                    value=10,
+                    step=1,
+                    help="Cost to run retention campaign as % of customer purchase amount"
+                )
+                
+                retention_success_rate = st.slider(
+                    "Retention Campaign Success Rate (%)",
+                    min_value=10,
+                    max_value=100,
+                    value=70,
+                    step=5,
+                    help="Percentage of churning customers successfully retained by campaign"
+                )
+            
+            with col2:
+                st.subheader("💡 Business Logic")
+                st.markdown("""
+                **Revenue Protection Logic:**
+                - **True Positive (Correct Churn Prediction)**: We target churning customers with retention campaigns
+                - **False Positive (Wrong Churn Prediction)**: We spend on retention for customers who wouldn't churn anyway
+                - **True Negative (Correct Stay Prediction)**: No action needed, customer stays
+                - **False Negative (Missed Churn)**: We lose the customer and their revenue
+                
+                **Cost-Benefit Calculation:**
+                - **Revenue Saved**: Successfully retained customers × purchase amount
+                - **Campaign Cost**: All targeted customers × retention cost
+                - **Revenue Lost**: Missed churn customers × purchase amount
+                """)
+            
+            if st.button("🚀 Run Revenue Simulation", type="primary"):
+                with st.spinner("Running simulation..."):
+                    # Get test data for simulation
+                    df = predictor.load_or_create_sample_data()
+                    df_processed = predictor.preprocess_data(df)
+                    
+                    # Features and target
+                    feature_columns = ['age', 'gender_encoded', 'purchase_amount', 'tenure']
+                    X = df_processed[feature_columns]
+                    y = df_processed['churn']
+                    
+                    # Split data (same as training)
+                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+                    
+                    # Get test data with purchase amounts
+                    test_indices = X_test.index
+                    test_data = df.iloc[test_indices].copy()
+                    
+                    # Scale features and get predictions
+                    X_test_scaled = predictor.scaler.transform(X_test)
+                    y_pred_proba = predictor.model.predict_proba(X_test_scaled)
+                    y_pred = (y_pred_proba[:, 1] > (churn_threshold / 100)).astype(int)
+                    
+                    # Add predictions to test data
+                    test_data['actual_churn'] = y_test.values
+                    test_data['predicted_churn'] = y_pred
+                    test_data['churn_probability'] = y_pred_proba[:, 1]
+                    
+                    # Calculate confusion matrix categories
+                    test_data['prediction_type'] = 'True Negative'
+                    test_data.loc[(test_data['actual_churn'] == 1) & (test_data['predicted_churn'] == 1), 'prediction_type'] = 'True Positive'
+                    test_data.loc[(test_data['actual_churn'] == 0) & (test_data['predicted_churn'] == 1), 'prediction_type'] = 'False Positive'
+                    test_data.loc[(test_data['actual_churn'] == 1) & (test_data['predicted_churn'] == 0), 'prediction_type'] = 'False Negative'
+                    
+                    # Calculate financial metrics
+                    tp_customers = test_data[test_data['prediction_type'] == 'True Positive']
+                    fp_customers = test_data[test_data['prediction_type'] == 'False Positive']
+                    fn_customers = test_data[test_data['prediction_type'] == 'False Negative']
+                    tn_customers = test_data[test_data['prediction_type'] == 'True Negative']
+                    
+                    # Revenue calculations
+                    total_revenue_at_risk = test_data[test_data['actual_churn'] == 1]['purchase_amount'].sum()
+                    
+                    # True Positives: Revenue saved through successful retention
+                    tp_revenue_saved = tp_customers['purchase_amount'].sum() * (retention_success_rate / 100)
+                    tp_campaign_cost = tp_customers['purchase_amount'].sum() * (retention_cost_pct / 100)
+                    tp_revenue_lost = tp_customers['purchase_amount'].sum() * (1 - retention_success_rate / 100)
+                    
+                    # False Positives: Unnecessary campaign costs
+                    fp_campaign_cost = fp_customers['purchase_amount'].sum() * (retention_cost_pct / 100)
+                    
+                    # False Negatives: Revenue completely lost
+                    fn_revenue_lost = fn_customers['purchase_amount'].sum()
+                    
+                    # Total calculations
+                    total_campaign_cost = tp_campaign_cost + fp_campaign_cost
+                    total_revenue_lost = tp_revenue_lost + fn_revenue_lost
+                    total_revenue_saved = tp_revenue_saved
+                    net_benefit = total_revenue_saved - total_campaign_cost - total_revenue_lost
+                    
+                    # Scenario without prediction (baseline)
+                    baseline_revenue_lost = total_revenue_at_risk
+                    
+                    # Model improvement
+                    improvement = baseline_revenue_lost - (total_revenue_lost + total_campaign_cost)
+                    roi = (improvement / total_campaign_cost * 100) if total_campaign_cost > 0 else 0
+                    
+                st.success("✅ Simulation completed!")
+                
+                # Display results
+                st.subheader("📊 Simulation Results")
+                
+                # Key metrics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric(
+                        "Revenue at Risk",
+                        f"Rp {total_revenue_at_risk:,.0f}",
+                        help="Total revenue from customers who actually churned"
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Revenue Saved",
+                        f"Rp {total_revenue_saved:,.0f}",
+                        help="Revenue saved through successful retention campaigns"
+                    )
+                
+                with col3:
+                    st.metric(
+                        "Campaign Cost",
+                        f"Rp {total_campaign_cost:,.0f}",
+                        help="Total cost of retention campaigns"
+                    )
+                
+                with col4:
+                    st.metric(
+                        "Net Benefit",
+                        f"Rp {improvement:,.0f}",
+                        delta=f"ROI: {roi:.1f}%",
+                        help="Total financial improvement vs doing nothing"
+                    )
+                
+                # Detailed breakdown
+                st.subheader("🔍 Detailed Financial Breakdown")
+                
+                breakdown_data = {
+                    'Scenario': [
+                        'Without Prediction Model (Baseline)',
+                        'With Prediction Model',
+                        'Net Improvement'
+                    ],
+                    'Revenue Lost': [
+                        f"Rp {baseline_revenue_lost:,.0f}",
+                        f"Rp {total_revenue_lost:,.0f}",
+                        f"Rp {baseline_revenue_lost - total_revenue_lost:,.0f}"
+                    ],
+                    'Campaign Cost': [
+                        "Rp 0",
+                        f"Rp {total_campaign_cost:,.0f}",
+                        f"Rp {total_campaign_cost:,.0f}"
+                    ],
+                    'Total Cost': [
+                        f"Rp {baseline_revenue_lost:,.0f}",
+                        f"Rp {total_revenue_lost + total_campaign_cost:,.0f}",
+                        f"Rp {improvement:,.0f}"
+                    ]
+                }
+                
+                breakdown_df = pd.DataFrame(breakdown_data)
+                st.dataframe(breakdown_df, use_container_width=True)
+                
+                # Confusion matrix with financial impact
+                st.subheader("💰 Prediction Categories & Financial Impact")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Confusion matrix counts
+                    confusion_data = {
+                        'Prediction Type': ['True Positive', 'False Positive', 'True Negative', 'False Negative'],
+                        'Count': [len(tp_customers), len(fp_customers), len(tn_customers), len(fn_customers)],
+                        'Revenue Impact': [
+                            f"Saved: Rp {tp_revenue_saved:,.0f}",
+                            f"Cost: Rp {fp_campaign_cost:,.0f}",
+                            "No Impact",
+                            f"Lost: Rp {fn_revenue_lost:,.0f}"
+                        ]
+                    }
+                    confusion_df = pd.DataFrame(confusion_data)
+                    st.dataframe(confusion_df, use_container_width=True)
+                
+                with col2:
+                    # Pie chart of prediction types
+                    fig_pie = px.pie(
+                        confusion_df, 
+                        values='Count', 
+                        names='Prediction Type',
+                        title='Distribution of Prediction Types'
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                
+                # Threshold sensitivity analysis
+                st.subheader("📈 Threshold Sensitivity Analysis")
+                
+                thresholds = range(10, 91, 10)
+                threshold_results = []
+                
+                for thresh in thresholds:
+                    y_pred_thresh = (y_pred_proba[:, 1] > (thresh / 100)).astype(int)
+                    
+                    # Recalculate for this threshold
+                    test_data_thresh = test_data.copy()
+                    test_data_thresh['predicted_churn'] = y_pred_thresh
+                    
+                    tp_thresh = len(test_data_thresh[(test_data_thresh['actual_churn'] == 1) & (test_data_thresh['predicted_churn'] == 1)])
+                    fp_thresh = len(test_data_thresh[(test_data_thresh['actual_churn'] == 0) & (test_data_thresh['predicted_churn'] == 1)])
+                    fn_thresh = len(test_data_thresh[(test_data_thresh['actual_churn'] == 1) & (test_data_thresh['predicted_churn'] == 0)])
+                    
+                    tp_revenue_thresh = test_data_thresh[(test_data_thresh['actual_churn'] == 1) & (test_data_thresh['predicted_churn'] == 1)]['purchase_amount'].sum() * (retention_success_rate / 100)
+                    campaign_cost_thresh = test_data_thresh[test_data_thresh['predicted_churn'] == 1]['purchase_amount'].sum() * (retention_cost_pct / 100)
+                    fn_revenue_thresh = test_data_thresh[(test_data_thresh['actual_churn'] == 1) & (test_data_thresh['predicted_churn'] == 0)]['purchase_amount'].sum()
+                    
+                    net_benefit_thresh = tp_revenue_thresh - campaign_cost_thresh - fn_revenue_thresh
+                    improvement_thresh = baseline_revenue_lost - (fn_revenue_thresh + campaign_cost_thresh)
+                    
+                    threshold_results.append({
+                        'Threshold': f"{thresh}%",
+                        'True Positives': tp_thresh,
+                        'False Positives': fp_thresh,
+                        'Net Benefit': improvement_thresh,
+                        'Campaign Cost': campaign_cost_thresh
+                    })
+                
+                threshold_df = pd.DataFrame(threshold_results)
+                
+                # Plot threshold analysis
+                fig_thresh = make_subplots(
+                    rows=2, cols=2,
+                    subplot_titles=('Net Benefit by Threshold', 'Campaign Cost by Threshold', 
+                                   'True Positives by Threshold', 'False Positives by Threshold'),
+                    specs=[[{"secondary_y": False}, {"secondary_y": False}],
+                           [{"secondary_y": False}, {"secondary_y": False}]]
+                )
+                
+                fig_thresh.add_trace(
+                    go.Scatter(x=threshold_df['Threshold'], y=threshold_df['Net Benefit'], name='Net Benefit'),
+                    row=1, col=1
+                )
+                
+                fig_thresh.add_trace(
+                    go.Scatter(x=threshold_df['Threshold'], y=threshold_df['Campaign Cost'], name='Campaign Cost'),
+                    row=1, col=2
+                )
+                
+                fig_thresh.add_trace(
+                    go.Scatter(x=threshold_df['Threshold'], y=threshold_df['True Positives'], name='True Positives'),
+                    row=2, col=1
+                )
+                
+                fig_thresh.add_trace(
+                    go.Scatter(x=threshold_df['Threshold'], y=threshold_df['False Positives'], name='False Positives'),
+                    row=2, col=2
+                )
+                
+                fig_thresh.update_layout(height=600, showlegend=False, title_text="Threshold Impact Analysis")
+                st.plotly_chart(fig_thresh, use_container_width=True)
+                
+                # Recommendations
+                st.subheader("💡 Business Recommendations")
+                
+                optimal_threshold_idx = threshold_df['Net Benefit'].idxmax()
+                optimal_threshold = threshold_df.iloc[optimal_threshold_idx]
+                
+                if improvement > 0:
+                    st.success(f"""
+                    ✅ **Positive ROI**: The churn prediction model provides a net benefit of **Rp {improvement:,.0f}**
+                    
+                    **Key Insights:**
+                    - Current threshold ({churn_threshold}%) generates ROI of {roi:.1f}%
+                    - Optimal threshold appears to be **{optimal_threshold['Threshold']}** with net benefit of **Rp {optimal_threshold['Net Benefit']:,.0f}**
+                    - Total campaign investment: **Rp {total_campaign_cost:,.0f}**
+                    - Revenue protected: **Rp {total_revenue_saved:,.0f}**
+                    """)
+                else:
+                    st.warning(f"""
+                    ⚠️ **Negative ROI**: The current configuration results in a net loss of **Rp {abs(improvement):,.0f}**
+                    
+                    **Recommendations:**
+                    - Consider increasing the churn threshold to reduce false positives
+                    - Optimize retention campaign costs or success rates
+                    - Review the cost-benefit parameters
+                    """)
+                
+                # Export simulation results
+                if st.button("📊 Export Simulation Results"):
+                    simulation_summary = {
+                        'Threshold': f"{churn_threshold}%",
+                        'Retention Cost': f"{retention_cost_pct}%",
+                        'Success Rate': f"{retention_success_rate}%",
+                        'Total Revenue at Risk': total_revenue_at_risk,
+                        'Revenue Saved': total_revenue_saved,
+                        'Campaign Cost': total_campaign_cost,
+                        'Revenue Lost': total_revenue_lost,
+                        'Net Benefit': improvement,
+                        'ROI': f"{roi:.1f}%"
+                    }
+                    
+                    st.download_button(
+                        label="Download Results as CSV",
+                        data=pd.DataFrame([simulation_summary]).to_csv(index=False),
+                        file_name="churn_simulation_results.csv",
+                        mime="text/csv"
+                    )
                         
-                        # Probability breakdown
-                        col3, col4 = st.columns(2)
-                        with col3:
-                            st.metric("Stay Probability", f"{churn_prob[0]:.1%}")
-                        with col4:
-                            st.metric("Churn Probability", f"{churn_prob[1]:.1%}")
+                    # Probability breakdown
+                    col3, col4 = st.columns(2)
+                    with col3:
+                        st.metric("Stay Probability", f"{churn_prob[0]:.1%}")
+                    with col4:
+                        st.metric("Churn Probability", f"{churn_prob[1]:.1%}")
     
     with tab2:
         st.header("Model Performance")
